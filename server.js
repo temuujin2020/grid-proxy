@@ -1,111 +1,174 @@
-// server.js
-import express from "express";
-import cors from "cors";
-import fetch from "node-fetch";
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
 
-// --- ENV (Render dashboard) ---
-// GRID_AUTH_HEADER_NAME = x-api-key
-// GRID_AUTH_HEADER_VALUE = <your key>
-// GRID_SERIES_STATE_URL = https://api-op.grid.gg/central-data/graphql
-const GRID_HEADER = process.env.GRID_AUTH_HEADER_NAME || "x-api-key";
-const GRID_TOKEN  = process.env.GRID_AUTH_HEADER_VALUE;
-const GRID_URL    = process.env.GRID_SERIES_STATE_URL;
-
+// ===== Config =====
 const app = express();
-app.use(cors());
-
 const PORT = process.env.PORT || 10000;
 
-// small helper: get now -> now + N hours window
-function getWindow(hours = 36) {
-  const now = new Date();
-  const to  = new Date(now.getTime() + Number(hours) * 60 * 60 * 1000);
-  return { now, to };
+// GRID auth/header (works with x-api-key or whatever your tenant uses)
+const ENDPOINT = process.env.GRID_SERIES_STATE_URL || 'https://api-op.grid.gg/central-data/graphql';
+const AUTH_HEADER_NAME = process.env.GRID_AUTH_HEADER_NAME || 'x-api-key';
+const AUTH_HEADER_VALUE = process.env.GRID_AUTH_HEADER_VALUE;
+if (!AUTH_HEADER_VALUE) {
+  console.error('Missing GRID_AUTH_HEADER_VALUE in environment');
+  process.exit(1);
 }
 
-// minimal root
-app.get("/", (_req, res) => {
-  res.type("text/plain").send("OK – use /health or /matches.json");
-});
+app.use(cors());
 
-// health
-app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    message: "healthy",
-    url: GRID_URL,
-    headerName: GRID_HEADER,
+// ===== Helpers =====
+const iso = d => new Date(d).toISOString();
+
+async function gql(query, variables = {}) {
+  const r = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      [AUTH_HEADER_NAME]: AUTH_HEADER_VALUE,
+    },
+    body: JSON.stringify({ query, variables }),
   });
+  const json = await r.json();
+  if (json.errors) throw new Error(JSON.stringify(json.errors));
+  return json.data;
+}
+
+const SERIES_FIELDS = `
+  id
+  startTimeScheduled
+  updatedAt
+  format { id }
+  tournament { id name }
+  teams { baseInfo { id name } }
+`;
+
+// ===== Keep your simple routes =====
+app.get('/', (_req, res) => {
+  res.type('text').send('grid-proxy: ok');
 });
 
-// main endpoint
-app.get("/matches.json", async (req, res) => {
-  try {
-    const hours = Number(req.query.hours || 36); // allow ?hours=48 etc.
-    const { now, to } = getWindow(hours);
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, message: 'healthy', url: ENDPOINT, headerName: AUTH_HEADER_NAME });
+});
 
-    // NOTE: we avoid schema-specific DateTimeFilter confusion by
-    // requesting a reasonable page and filtering server-side.
+app.get('/matches.json', async (_req, res) => {
+  try {
     const query = `
-      query AllSeries($first: Int!, $orderBy: SeriesOrderBy!, $orderDirection: OrderDirection!) {
-        allSeries(first: $first, orderBy: $orderBy, orderDirection: $orderDirection) {
-          edges {
-            node {
-              id
-              startTimeScheduled
-              updatedAt
-              format { id }
-              tournament { id name }
-              teams { baseInfo { id name } }
-            }
-          }
+      query {
+        allSeries(first: 5, orderBy: UPDATED_AT, orderDirection: DESC) {
+          edges { node { ${SERIES_FIELDS} } }
+        }
+      }
+    `;
+    const data = await gql(query);
+    res.json({ ok: true, data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// ===== NEW: Upcoming within next N hours =====
+app.get('/api/series/upcoming', async (req, res) => {
+  try {
+    const hours = Math.max(1, Math.min(Number(req.query.hours || 24), 72));
+    const now = new Date();
+    const to = new Date(now.getTime() + hours * 3600_000);
+
+    const query = `
+      query Upcoming($first: Int!, $from: String!, $to: String!) {
+        allSeries(
+          first: $first,
+          orderBy: UPDATED_AT,
+          orderDirection: DESC,
+          filter: { startTimeScheduled: { from: $from, to: $to } }
+        ) {
           totalCount
+          edges { node { ${SERIES_FIELDS} } }
         }
       }
     `;
 
-    const variables = {
-      first: 100,                      // pull a page
-      orderBy: "StartTimeScheduled",   // per your schema enum
-      orderDirection: "ASC",
-    };
+    const data = await gql(query, { first: 50, from: iso(now), to: iso(to) });
+    const items = (data.allSeries?.edges || []).map(({ node: n }) => ({
+      id: n.id,
+      time: n.startTimeScheduled,
+      event: n.tournament?.name || '',
+      format: n.format?.id || '',
+      teams: (n.teams || []).map(t => t?.baseInfo?.name || '').filter(Boolean),
+    }));
 
-    const resp = await fetch(GRID_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [GRID_HEADER]: GRID_TOKEN,     // e.g. { "x-api-key": "..."}
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    res.json({ ok: true, strategy: 'scheduledWindow', count: items.length, items, windowHours: hours, asOf: iso(now) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
-    const body = await resp.json();
+// ===== NEW: Live now (try live flag, else fallback to +/-2h) =====
+app.get('/api/series/live', async (_req, res) => {
+  const now = new Date();
 
-    // Pass through provider errors transparently
-    if (body.errors) {
-      return res.status(200).json({ ok: true, data: body, note: "Upstream returned errors" });
+  const queryLive = `
+    query LiveNow($first: Int!) {
+      allSeries(
+        first: $first,
+        orderBy: UPDATED_AT,
+        orderDirection: DESC,
+        filter: { live: { isLive: true } }
+      ) {
+        edges { node { ${SERIES_FIELDS} } }
+      }
+    }
+  `;
+
+  const queryNearNow = `
+    query NearNow($first: Int!, $from: String!, $to: String!) {
+      allSeries(
+        first: $first,
+        orderBy: UPDATED_AT,
+        orderDirection: DESC,
+        filter: { startTimeScheduled: { from: $from, to: $to } }
+      ) {
+        edges { node { ${SERIES_FIELDS} } }
+      }
+    }
+  `;
+
+  try {
+    // Strategy A: real live flag (if supported on your tenant)
+    try {
+      const live = await gql(queryLive, { first: 50 });
+      const edges = live.allSeries?.edges || [];
+      const items = edges.map(({ node: n }) => ({
+        id: n.id,
+        time: n.startTimeScheduled,
+        event: n.tournament?.name || '',
+        format: n.format?.id || '',
+        teams: (n.teams || []).map(t => t?.baseInfo?.name || '').filter(Boolean),
+      }));
+      return res.json({ ok: true, strategy: 'liveFilter', count: items.length, items, asOf: iso(now) });
+    } catch {
+      // fall back if live filter isn’t available
     }
 
-    const edges = body?.data?.allSeries?.edges ?? [];
-    const inWindow = edges
-      .map(e => e.node)
-      .filter(n => {
-        const ts = new Date(n.startTimeScheduled);
-        return ts >= now && ts <= to;
-      });
-
-    res.json({
-      ok: true,
-      windowHours: hours,
-      count: inWindow.length,
-      matches: inWindow,
-      rawCount: edges.length,
-    });
+    // Strategy B: time window around now
+    const from = new Date(now.getTime() - 2 * 3600_000);
+    const to = new Date(now.getTime() + 2 * 3600_000);
+    const win = await gql(queryNearNow, { first: 50, from: iso(from), to: iso(to) });
+    const edges2 = win.allSeries?.edges || [];
+    const items2 = edges2.map(({ node: n }) => ({
+      id: n.id,
+      time: n.startTimeScheduled,
+      event: n.tournament?.name || '',
+      format: n.format?.id || '',
+      teams: (n.teams || []).map(t => t?.baseInfo?.name || '').filter(Boolean),
+    }));
+    res.json({ ok: true, strategy: 'timeWindow', count: items2.length, items: items2, asOf: iso(now) });
   } catch (err) {
-    res.status(500).json({ ok: false, error: String(err?.message || err) });
+    res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server listening on :${PORT}`);
 });
