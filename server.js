@@ -1,15 +1,20 @@
 app.get("/matches.json", async (req, res) => {
   try {
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const tomorrow = new Date(today);
+    tomorrow.setUTCDate(today.getUTCDate() + 1);
+
     const query = `
-      query {
+      query($from: String!, $to: String!) {
         allSeries(
-          first: 5
+          first: 20
           orderBy: UpdatedAt
           orderDirection: DESC
           filter: {
             startTimeScheduled: {
-              after: "2025-09-06T00:00:00Z"
-              before: "2025-09-08T00:00:00Z"
+              after: $from
+              before: $to
             }
           }
         ) {
@@ -25,13 +30,18 @@ app.get("/matches.json", async (req, res) => {
       }
     `;
 
+    const variables = {
+      from: today.toISOString(),
+      to: tomorrow.toISOString()
+    };
+
     const response = await fetch(process.env.GRID_SERIES_STATE_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         [process.env.GRID_AUTH_HEADER_NAME]: process.env.GRID_AUTH_HEADER_VALUE,
       },
-      body: JSON.stringify({ query })
+      body: JSON.stringify({ query, variables })
     });
 
     const data = await response.json();
