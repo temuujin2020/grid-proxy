@@ -6,7 +6,7 @@ import cors from 'cors';
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// GRID auth/header (works with x-api-key or whatever your tenant uses)
+// GRID endpoint + auth
 const ENDPOINT = process.env.GRID_SERIES_STATE_URL || 'https://api-op.grid.gg/central-data/graphql';
 const AUTH_HEADER_NAME = process.env.GRID_AUTH_HEADER_NAME || 'x-api-key';
 const AUTH_HEADER_VALUE = process.env.GRID_AUTH_HEADER_VALUE;
@@ -43,7 +43,7 @@ const SERIES_FIELDS = `
   teams { baseInfo { id name } }
 `;
 
-// ===== Keep your simple routes =====
+// ===== Basic routes =====
 app.get('/', (_req, res) => {
   res.type('text').send('grid-proxy: ok');
 });
@@ -52,11 +52,12 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, message: 'healthy', url: ENDPOINT, headerName: AUTH_HEADER_NAME });
 });
 
+// Debug route: recent matches
 app.get('/matches.json', async (_req, res) => {
   try {
     const query = `
       query {
-        allSeries(first: 5, orderBy: UPDATED_AT, orderDirection: DESC) {
+        allSeries(first: 5, orderBy: UPDATEDAT, orderDirection: DESC) {
           edges { node { ${SERIES_FIELDS} } }
         }
       }
@@ -68,7 +69,7 @@ app.get('/matches.json', async (_req, res) => {
   }
 });
 
-// ===== NEW: Upcoming within next N hours =====
+// ===== Upcoming within next N hours =====
 app.get('/api/series/upcoming', async (req, res) => {
   try {
     const hours = Math.max(1, Math.min(Number(req.query.hours || 24), 72));
@@ -79,9 +80,9 @@ app.get('/api/series/upcoming', async (req, res) => {
       query Upcoming($first: Int!, $from: String!, $to: String!) {
         allSeries(
           first: $first,
-          orderBy: UPDATED_AT,
+          orderBy: UPDATEDAT,
           orderDirection: DESC,
-          filter: { startTimeScheduled: { from: $from, to: $to } }
+          filter: { startTimeScheduled: { gte: $from, lte: $to } }
         ) {
           totalCount
           edges { node { ${SERIES_FIELDS} } }
@@ -98,13 +99,20 @@ app.get('/api/series/upcoming', async (req, res) => {
       teams: (n.teams || []).map(t => t?.baseInfo?.name || '').filter(Boolean),
     }));
 
-    res.json({ ok: true, strategy: 'scheduledWindow', count: items.length, items, windowHours: hours, asOf: iso(now) });
+    res.json({
+      ok: true,
+      strategy: 'scheduledWindow',
+      count: items.length,
+      items,
+      windowHours: hours,
+      asOf: iso(now),
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 
-// ===== NEW: Live now (try live flag, else fallback to +/-2h) =====
+// ===== Live now (try live flag, else fallback to +/-2h) =====
 app.get('/api/series/live', async (_req, res) => {
   const now = new Date();
 
@@ -112,7 +120,7 @@ app.get('/api/series/live', async (_req, res) => {
     query LiveNow($first: Int!) {
       allSeries(
         first: $first,
-        orderBy: UPDATED_AT,
+        orderBy: UPDATEDAT,
         orderDirection: DESC,
         filter: { live: { isLive: true } }
       ) {
@@ -125,9 +133,9 @@ app.get('/api/series/live', async (_req, res) => {
     query NearNow($first: Int!, $from: String!, $to: String!) {
       allSeries(
         first: $first,
-        orderBy: UPDATED_AT,
+        orderBy: UPDATEDAT,
         orderDirection: DESC,
-        filter: { startTimeScheduled: { from: $from, to: $to } }
+        filter: { startTimeScheduled: { gte: $from, lte: $to } }
       ) {
         edges { node { ${SERIES_FIELDS} } }
       }
@@ -135,7 +143,7 @@ app.get('/api/series/live', async (_req, res) => {
   `;
 
   try {
-    // Strategy A: real live flag (if supported on your tenant)
+    // Strategy A: live flag
     try {
       const live = await gql(queryLive, { first: 50 });
       const edges = live.allSeries?.edges || [];
@@ -146,12 +154,12 @@ app.get('/api/series/live', async (_req, res) => {
         format: n.format?.id || '',
         teams: (n.teams || []).map(t => t?.baseInfo?.name || '').filter(Boolean),
       }));
-      return res.json({ ok: true, strategy: 'liveFilter', count: items.length, items, asOf: iso(now) });
-    } catch {
-      // fall back if live filter isn’t available
-    }
+      if (items.length > 0) {
+        return res.json({ ok: true, strategy: 'liveFilter', count: items.length, items, asOf: iso(now) });
+      }
+    } catch { /* fall through */ }
 
-    // Strategy B: time window around now
+    // Strategy B: time window +/- 2h
     const from = new Date(now.getTime() - 2 * 3600_000);
     const to = new Date(now.getTime() + 2 * 3600_000);
     const win = await gql(queryNearNow, { first: 50, from: iso(from), to: iso(to) });
