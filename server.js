@@ -54,12 +54,17 @@ app.get('/health', (_req, res) => {
 // Debug route: recent matches
 app.get('/matches.json', async (_req, res) => {
   try {
-    const query = `
-      query {
-          edges { node { ${SERIES_FIELDS} } }
+const query = `
+  query {
+    allSeries(first: 5) {
+      edges {
+        node {
+          ${SERIES_FIELDS}
         }
       }
-    `;
+    }
+  }
+`;
     const data = await gql(query);
     res.json({ ok: true, data });
   } catch (e) {
