@@ -51,25 +51,36 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, message: 'healthy', url: ENDPOINT, headerName: AUTH_HEADER_NAME });
 });
 
-// Debug route: recent matches
-app.get('/matches.json', async (_req, res) => {
-  try {
-const query = `
-  query {
+// Debug route: recent matches (simple + safe)
+const MATCHES_QUERY = `
+  query Matches {
     allSeries(first: 5) {
       edges {
         node {
-          ${SERIES_FIELDS}
+          id
+          startTimeScheduled
+          updatedAt
+          format { id }
+          tournament { id name }
+          teams { baseInfo { id name } }
         }
       }
     }
   }
 `;
-    const data = await gql(query);
+
+app.get('/matches.json', async (_req, res) => {
+  try {
+    const data = await gql(MATCHES_QUERY);
     res.json({ ok: true, data });
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
+});
+
+// Optional: see the exact query text we’re sending
+app.get('/debug/matches-query', (_req, res) => {
+  res.type('text/plain').send(MATCHES_QUERY);
 });
 
 // ===== Upcoming within next N hours =====
