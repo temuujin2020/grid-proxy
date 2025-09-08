@@ -37,7 +37,6 @@ async function gql(query, variables = {}) {
 const SERIES_FIELDS = `
   id
   startTimeScheduled
-  updatedAt
   format { id }
   tournament { id name }
   teams { baseInfo { id name } }
@@ -57,7 +56,6 @@ app.get('/matches.json', async (_req, res) => {
   try {
     const query = `
       query {
-        allSeries(first: 5, orderBy: UPDATEDAT, orderDirection: DESC) {
           edges { node { ${SERIES_FIELDS} } }
         }
       }
@@ -80,8 +78,6 @@ app.get('/api/series/upcoming', async (req, res) => {
       query Upcoming($first: Int!, $from: String!, $to: String!) {
         allSeries(
           first: $first,
-          orderBy: UPDATEDAT,
-          orderDirection: DESC,
           filter: { startTimeScheduled: { gte: $from, lte: $to } }
         ) {
           totalCount
@@ -120,8 +116,6 @@ app.get('/api/series/live', async (_req, res) => {
     query LiveNow($first: Int!) {
       allSeries(
         first: $first,
-        orderBy: UPDATEDAT,
-        orderDirection: DESC,
         filter: { live: { isLive: true } }
       ) {
         edges { node { ${SERIES_FIELDS} } }
@@ -133,8 +127,6 @@ app.get('/api/series/live', async (_req, res) => {
     query NearNow($first: Int!, $from: String!, $to: String!) {
       allSeries(
         first: $first,
-        orderBy: UPDATEDAT,
-        orderDirection: DESC,
         filter: { startTimeScheduled: { gte: $from, lte: $to } }
       ) {
         edges { node { ${SERIES_FIELDS} } }
