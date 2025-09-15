@@ -10,6 +10,11 @@ const PORT = process.env.PORT || 10000;
 const ENDPOINT = process.env.GRID_SERIES_STATE_URL || 'https://api-op.grid.gg/central-data/graphql';
 const AUTH_HEADER_NAME = process.env.GRID_AUTH_HEADER_NAME || 'x-api-key';
 const AUTH_HEADER_VALUE = process.env.GRID_AUTH_HEADER_VALUE;
+
+// PandaScore API
+const PANDASCORE_API = "https://api.pandascore.co";
+const PANDASCORE_TOKEN = process.env.PANDASCORE_TOKEN;
+
 if (!AUTH_HEADER_VALUE) {
   console.error('Missing GRID_AUTH_HEADER_VALUE in environment');
   process.exit(1);
@@ -182,6 +187,61 @@ app.get('/api/series/live', async (_req, res) => {
     res.json({ ok: true, strategy: 'timeWindow', count: items2.length, items: items2, asOf: iso(now) });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// ===== PandaScore API Routes =====
+// CS2 matches
+app.get('/api/cs2/live', async (req, res) => {
+  try {
+    if (!PANDASCORE_TOKEN) {
+      return res.status(500).json({ error: 'PandaScore token not configured' });
+    }
+    const response = await fetch(`${PANDASCORE_API}/csgo/matches/running?token=${PANDASCORE_TOKEN}&per_page=50`);
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch CS2 live matches' });
+  }
+});
+
+app.get('/api/cs2/upcoming', async (req, res) => {
+  try {
+    if (!PANDASCORE_TOKEN) {
+      return res.status(500).json({ error: 'PandaScore token not configured' });
+    }
+    const response = await fetch(`${PANDASCORE_API}/csgo/matches/upcoming?token=${PANDASCORE_TOKEN}&per_page=50`);
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch CS2 upcoming matches' });
+  }
+});
+
+// DOTA 2 matches
+app.get('/api/dota2/live', async (req, res) => {
+  try {
+    if (!PANDASCORE_TOKEN) {
+      return res.status(500).json({ error: 'PandaScore token not configured' });
+    }
+    const response = await fetch(`${PANDASCORE_API}/dota2/matches/running?token=${PANDASCORE_TOKEN}&per_page=50`);
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch DOTA 2 live matches' });
+  }
+});
+
+app.get('/api/dota2/upcoming', async (req, res) => {
+  try {
+    if (!PANDASCORE_TOKEN) {
+      return res.status(500).json({ error: 'PandaScore token not configured' });
+    }
+    const response = await fetch(`${PANDASCORE_API}/dota2/matches/upcoming?token=${PANDASCORE_TOKEN}&per_page=50`);
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch DOTA 2 upcoming matches' });
   }
 });
 
